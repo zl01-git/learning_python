@@ -1,4 +1,5 @@
 import os
+import time
 import shutil
 import numpy
 from typing import List
@@ -14,8 +15,8 @@ class ParsingImages:
         self._root = "/".join(self._url.split("/")[:-1]) + "/"
         self._root_depth2 = ""
         self._dir_name = dir
-        self._size = 0
         self._check_dir()
+        self._size = 0
 
 
     def _check_dir(self):
@@ -24,7 +25,8 @@ class ParsingImages:
         os.mkdir(self._dir_name)
 
 
-    async def _get_soup(self, url: str, session: aiohttp.ClientSession) -> BeautifulSoup:
+    async def _get_soup(self, url: str,
+                              session: aiohttp.ClientSession) -> BeautifulSoup:
         async with session.get(url) as response:
             soup = BeautifulSoup(await response.text(), "lxml")
             return soup
@@ -52,12 +54,13 @@ class ParsingImages:
         return img_urls
 
 
-    async def _save_images(self, url: str, session: aiohttp.ClientSession) -> None:
+    async def _save_images(self, url: str, 
+                                       session: aiohttp.ClientSession) -> None:
         file_name = url.split("/")[-1]
-        async with aiofiles.open(f"{self._dir_name}/{file_name}", "wb") as file:
+        async with aiofiles.open(f"{self._dir_name}/{file_name}", "wb") as fl:
             async with session.get(url) as response:
-                async for piece in response.content.iter_chunked(1024):
-                    await file.write(piece)
+                async for piece in response.content.iter_chunked(1024*1024):
+                    await fl.write(piece)
 
 
     def _get_size(self):
@@ -69,26 +72,29 @@ class ParsingImages:
     async def _main(self):
         async with aiohttp.ClientSession() as session:
             soup = await self._get_soup(self._url, session)
-            category_depth1 = self._make_category_depth1(soup)
+            cat_depth1 = self._make_category_depth1(soup)
             
-            task = [self._get_soup(lnk, session) for lnk in category_depth1]
-            soup_category_depth2 = await asyncio.gather(*task)
-            category_depth2 = [self._make_category_depth2(cat) for cat in soup_category_depth2]
+            task = [asyncio.create_task(self._get_soup(lnk, session))
+                                                         for lnk in cat_depth1]
+            soup_cat_depth2 = await asyncio.gather(*task)
+
+            cat_depth2 = [self._make_category_depth2(cat)
+                                                    for cat in soup_cat_depth2]
+            for cat in range(len(cat_depth2)):
+                for lnk in range(len(cat_depth2[cat])):
+                    cat_depth2[cat][lnk] = asyncio.create_task(
+                                 self._get_soup(cat_depth2[cat][lnk], session))
             
-            task2 = []
-            for cat in category_depth2:
-                for lnk in cat:
-                    task2.append(self._get_soup(lnk, session))
-            splits = numpy.array_split(task2, 100)
             soup_img_urls = []
-            for _task in splits:
+            for _task in cat_depth2:
                 soup_img_urls.extend(await asyncio.gather(*_task))
 
-            img_urls = self._make_img_urls(soup_img_urls)
-            full_task = [self._save_images(img, session) for img in img_urls]
+            img_urls = list(set(self._make_img_urls(soup_img_urls)))
+            full_task = [asyncio.create_task(self._save_images(img, session))
+                                                           for img in img_urls]
             splits = numpy.array_split(full_task, 1000)
             for _task in splits:
-                await asyncio.wait_for(*_task)
+                await asyncio.gather(*_task)
 
             self._get_size()
 
@@ -98,3 +104,12 @@ class ParsingImages:
         return self._size
 
 
+if __name__ == "__main__":
+    print("Please wait... ~ 200 seconds")
+    start = time.time() 
+    url = "https://parsinger.ru/asyncio/aiofile/3/index.html"
+    dir_name = "saved_images"
+    getimg = ParsingImages(url, dir_name)
+    size = getimg()
+    print(f"Size downloaded images = {size}")
+    print(f"Finished at {round(time.time() - start, 2)} seconds")
